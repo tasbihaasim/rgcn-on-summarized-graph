@@ -255,7 +255,7 @@ def get_baseline_data(original_file):
     edge_list = torch.tensor(edge_list)
     edge_type_tensor = torch.tensor(edge_type_list, dtype=torch.long)
     # assert len(set(edge_list[0])) == tensor_X.shape[0], "Mismatch in lengths of tensor_X and edge_list_subjects"
-    X_tensor = y_labels
+    X_tensor = torch.full((len(y_labels), 1), 1, dtype=torch.float32)
     return X_tensor, edge_type_tensor, edge_list,  y_labels
 
 def create_sparse_feature_matrix(number_of_nodes):
@@ -330,10 +330,9 @@ def apply_and_evaluate(rgcn_layer, tensor_X, edgeList, edge_type, y_variable):
 
 
 ## GET DATA FOR SUMMARIZED MODEL
-edge_list_summarized, edge_type_summarized, class_nodes = result # edge list
+edge_list_summarized, edge_type_summarized, class_nodes = result # edge list and edgetype
 target_labels_summarized = create_target_matrix(class_nodes) # Y_labels
 feature_matrix_summarized = torch.full((len(target_labels_summarized), 1), 1, dtype=torch.float32) # feature matrix
-
 
 ## GET DATA FOR BASELINE MODEL
 feature_matrix_baseline, edge_type_baseline, edge_list_baseline, target_labels_baseline = get_baseline_data(original_file)
