@@ -1,7 +1,0 @@
-<node_1> <relationship_2> <node_4> .
-<node_1> <relationship_1> <node_3> .
-<node_2> <relationship_1> <node_3> .
-<node_2> <relationship_2> <node_4> .
-<node_5> <relationship_1> <node_1> .
-<node_6> <relationship_2> <node_2> .
-<node_6> <relationship_1> <node_2> .

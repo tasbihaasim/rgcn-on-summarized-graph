@@ -1,4 +1,5 @@
 venv/
 env/
+testwork/
 __pycache__/
 *.pyc

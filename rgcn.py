@@ -30,10 +30,21 @@ node_features_file = "aifb_stripped.ntnode_ID" ## contains clusters and the numb
 edge_indices_file = "aifb_stripped.ntedge_ID"
 original_file = "aifb_stripped.nt"
 output_file = "here.txt"
-features_file = 'trainingSet.tsv'
+node_classes_file = 'node_classes.tsv'
 
-def read_tsv(file_path):
-    """ 
+def read_node_classes(file_path):
+    """
+    Reads a TSV file and categorizes nodes into sets based on column-wise class membership.
+
+    This function processes each row in a TSV file, creating a list of sets where each set contains
+    unique nodes belonging to a specific class (column). The function assumes the first row of the
+    TSV file is a header.
+
+    Parameters:
+        file_path (str): Path to the TSV file containing node class data.
+
+    Returns:
+        list[set]: A list of sets, each containing nodes of a particular class.
     """
     column_sets = []
     with open(file_path, 'r', newline='', encoding='utf-8') as file:
@@ -50,9 +61,21 @@ def read_tsv(file_path):
 
     return column_sets
 
-def get_required_mappings(output_file, node_features_file):
+def get_required_mappings(output_file, node_features_file, edge_indices_file):
     '''maps node from original graph to summarized group
-    and maps relationship to its corresponding number'''
+    and maps relationship to its corresponding edgeID
+
+    Parameters:
+        - output_file (str): Path to the output file containing mappings to summarized nodes.
+        - node_features_file (str): Path to the nodeID file containing nodeLabels and their corresponding ID. 
+        - edge_indices_file (str): Path to the edgeID file containing edgeType and their corresponding edgeType ID. 
+
+
+    Returns:
+        - Dict[node, summarized_node]: A map containing key = node and value = summarized node that it maps to. 
+        - Dict[relationship, edgeType]: A map containing key = relationship and value = numerical representation of edge.
+    
+    '''
     groups = []
     with open(output_file, "r") as f:
         for line in f:
@@ -88,23 +111,38 @@ def get_required_mappings(output_file, node_features_file):
             edge_ID = int(parts[1])
             relationships_to_edgetype[edge_label] =  edge_ID
     
-    return node_to_updatedGroup, updatedGroup_to_group, relationships_to_edgetype
+    return node_to_updatedGroup, relationships_to_edgetype
 
-def get_feature_type(node):
-    if node in train_features[0]:
+def get_node_class(node):
+    '''
+    Gets the node class. 
+
+    Parameters:
+        node : node label
+
+    Returns:
+        int: numerical value representing node class type
+    '''
+    
+    if node in node_classes[0]:
         return 1
-    if node in train_features[2]:
+    if node in node_classes[2]:
         return 2
     else:
         return 0
 
-def in_set(element, array_of_sets):
-    for s in array_of_sets:
-        if element in s:
-            return True
-    return False
-
 def prepare_data(relationships_to_edgetype, node_to_updatedGroup):
+    '''
+
+    Parameters:
+        - Dict[node, summarized_node]: A map containing key = node and value = summarized node that it maps to. 
+        - Dict[relationship, edgeType]: A map containing key = relationship and value = numerical representation of edge.
+
+    Returns:
+        - List[List]: A list of 2 lists. At index[i] of both the list is the two nodes. 
+        - Dict[summarized_node, [(node, node_class)]]: A mapping containing summarized nodes and the 
+            corresponding nodes from original graph and their class types.
+    '''
     graph = Graph()
     edge_list1 = []
     edge_list2 = []
@@ -124,8 +162,8 @@ def prepare_data(relationships_to_edgetype, node_to_updatedGroup):
                 edge_list1.append(summarized_subject)
                 edge_type.append(relationship)
                 edge_list2.append(summarized_object)
-                feature_type_subject = get_feature_type(original_subject)
-                feature_type_object = get_feature_type(original_object)
+                feature_type_subject = get_node_class(original_subject)
+                feature_type_object = get_node_class(original_object)
 
                 if summarized_subject in features:
                     features[summarized_subject].append((original_subject, feature_type_subject))
@@ -137,19 +175,23 @@ def prepare_data(relationships_to_edgetype, node_to_updatedGroup):
                 if summarized_object not in features:
                     features[summarized_object] = [(original_object, feature_type_object)]
                 
-                    
-                    
-
     edge_list = [edge_list1, edge_list2]
     edge_list = torch.tensor(edge_list)
-    # print(edge_list1_train)
-    # if (len(set(edge_list_train))) == len(features_train):
-    #     print("True")
     edge_type = torch.tensor(edge_type)
     return edge_list, edge_type, features
 
-def create_feature_matrix(nodes_dict):
-    ## iterate over updated Group = total number of columns
+def create_target_matrix(nodes_dict):
+    '''
+    Gets the target tensor matrix using the features mapping.
+
+    Parameters:
+        Dict[summarizednode:[(node, node_class)]] : summarized node and the
+        nodes and classtype that are contained within it. 
+
+    Returns:
+        tensor matrix: a matrix containing target variable. 
+
+    '''
     matrix=[]
     count = 0
     for group_id in nodes_dict:
@@ -167,18 +209,9 @@ def create_feature_matrix(nodes_dict):
         matrix.append(row)
     return torch.tensor(matrix)
 
-def validity_check(feature_matrix, edge_type, edge_list):
-    if len(edge_type) == len(edge_list[0]):
-        print("here")
-        if len(set(edge_list[0])) == len(feature_matrix):
-            return True
-    else:
-        return False
-
-def construct_baseline_model(original_file):
+def get_baseline_data(original_file):
     # Load RDF data from NT file
     g = Graph()
-
     # Process RDF data to create tensors for RGCN
     node_dict = {}
     edge_list = []
@@ -198,6 +231,7 @@ def construct_baseline_model(original_file):
                 # print(parts[1])
                 pred = relationships_to_edgetype[str(parts[1])]
                 # Node processing
+                # Node processing
                 if subj not in node_dict:
                     node_dict[subj] = node_index
                     node_index += 1
@@ -213,27 +247,48 @@ def construct_baseline_model(original_file):
     # X_tensor = torch.zeros(len(node_dict), 4)
 
     for uri, index in node_dict.items():
-        feature_type = get_feature_type(uri)
+        feature_type = get_node_class(uri)
         if feature_type is not None:
             y_labels[index][feature_type] = 1
-            
 
     edge_list = [edge_list1, edge_list2]
     edge_list = torch.tensor(edge_list)
     edge_type_tensor = torch.tensor(edge_type_list, dtype=torch.long)
     # assert len(set(edge_list[0])) == tensor_X.shape[0], "Mismatch in lengths of tensor_X and edge_list_subjects"
     X_tensor = y_labels
-    return X_tensor, edge_list, edge_type_tensor, y_labels
+    return X_tensor, edge_type_tensor, edge_list,  y_labels
+
+def create_sparse_feature_matrix(number_of_nodes):
+    # Creating a sparse identity matrix (one-hot encoding)
+    # Indices of non-zero elements
+    indices = torch.arange(0, number_of_nodes, dtype=torch.long).unsqueeze(0)
+    indices = torch.cat((indices, indices), dim=0)
+
+    # Values of non-zero elements
+    values = torch.ones(number_of_nodes)
+
+    # Create a sparse tensor
+    shape = (number_of_nodes, number_of_nodes)
+    feature_matrix_sparse = torch.sparse_coo_tensor(indices, values, shape)
+
+    return feature_matrix_sparse
+
+node_classes = read_node_classes(node_classes_file)    
+## get required mapping for summarized graph
+node_to_summarized_group, relationships_to_edgetype= get_required_mappings(node_features_file=node_features_file, edge_indices_file=edge_indices_file, output_file=output_file)
+## get edge type and edge list and features mapping
+result = prepare_data(relationships_to_edgetype, node_to_summarized_group)
+
 
 def train_rgc_layer(tensor_X, edgeList, edge_type, y_train, num_classes=3, transfer_weights=None, freeze_layers=False, num_epochs=51, lr=0.01):
     in_channels = tensor_X.shape[1]  # Assuming the number of features per node is the second dimension of tensor_X
-    print(tensor_X.shape)
     out_channels = num_classes
     num_relations = len(set(edge_type))
+    hidden_units = 16  # Number of hidden units as per literature
 
-    # Create an instance of RGCNConv
-    rgcn_layer1 = RGCNConv(in_channels, 16, num_relations, num_bases=None, num_blocks=None)
-    rgcn_layer2 = RGCNConv(16, out_channels, num_relations, num_bases=None, num_blocks=None)
+    # Create an instance of RGCNConv without basis decomposition
+    rgcn_layer1 = RGCNConv(in_channels, hidden_units, num_relations, num_bases=None, num_blocks=None)
+    rgcn_layer2 = RGCNConv(hidden_units, out_channels, num_relations, num_bases=None, num_blocks=None)
 
     if transfer_weights is not None:
         rgcn_layer1.load_state_dict(transfer_weights['rgcn_layer1'])
@@ -245,8 +300,7 @@ def train_rgc_layer(tensor_X, edgeList, edge_type, y_train, num_classes=3, trans
                 param.requires_grad = False
 
     criterion = torch.nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.Adam(list(rgcn_layer1.parameters()) + list(rgcn_layer2.parameters()), lr=lr, weight_decay=5e-4)
-
+    optimizer = torch.optim.Adam(list(rgcn_layer1.parameters()) + list(rgcn_layer2.parameters()), lr=1.0e-2, weight_decay=5.0e-4)  # Adjusted learning rate and weight decay
 
     for epoch in range(num_epochs):
         optimizer.zero_grad()
@@ -275,35 +329,60 @@ def apply_and_evaluate(rgcn_layer, tensor_X, edgeList, edge_type, y_variable):
     print(f"Test Loss: {loss_test.item()}")
 
 
-# Example usage
-# train_rgc_layer(tensor_X, edgeList, edge_type, num_classes=4)
-# To transfer weights and freeze layers:
-# transferred_weights = train_rgc_layer(...)
-# train_rgc_layer(tensor_X, edgeList, edge_type, num_classes=4, transfer_weights=transferred_weights, freeze_layers=True)
+## GET DATA FOR SUMMARIZED MODEL
+edge_list_summarized, edge_type_summarized, class_nodes = result # edge list
+target_labels_summarized = create_target_matrix(class_nodes) # Y_labels
+feature_matrix_summarized = torch.full((len(target_labels_summarized), 1), 1, dtype=torch.float32) # feature matrix
 
 
-train_features = read_tsv(features_file)
+## GET DATA FOR BASELINE MODEL
+feature_matrix_baseline, edge_type_baseline, edge_list_baseline, target_labels_baseline = get_baseline_data(original_file)
 
-node_to_updatedGroup, updatedGroup_to_group, relationships_to_edgetype= get_required_mappings(node_features_file=node_features_file, output_file=output_file)
+# Print the number of nodes and edges in the original graph
+num_nodes_original = feature_matrix_baseline.shape[0]  # Assuming the number of nodes is the first dimension of features_train
+num_edges_original = edge_list_baseline.shape[1]  # Assuming edge_list_train is a 2xN matrix where N is the number of edges
 
-tensor_X_original, edge_index_original, edge_type_original, y_labels_original = construct_baseline_model(original_file)
+print(f"Original Graph: Number of nodes = {num_nodes_original}")
+print(f"Original Graph: Number of edges = {num_edges_original}")
 
-result = prepare_data(relationships_to_edgetype, node_to_updatedGroup)
-edge_list_summarized, edge_type_summarized, features_summarized = result
+# Print the number of nodes and edges in the summarized graph
+num_nodes_summarized = feature_matrix_summarized.shape[0]  # Assuming the number of nodes is the first dimension of feature_matrix_summarized
+num_edges_summarized = edge_list_summarized.shape[1]  # Assuming edge_list_summarized is a 2xN matrix where N is the number of edges
 
-feature_matrix_summarized = create_feature_matrix(features_summarized)
-y_labels_summarized = feature_matrix_summarized
-
-
-train_rgc_layer(tensor_X_original, edge_index_original, edge_type_original, y_labels_original)
-# train_rgc_layer(feature_matrix_summarized, edge_list_summarized, edge_type_summarized, y_labels_summarized, 3, freeze_layers=True)
-
-
-## TODO:
+print(f"Summarized Graph: Number of nodes = {num_nodes_summarized}")
+print(f"Summarized Graph: Number of edges = {num_edges_summarized}")
 
 
+## first model: summarized graph
+learned_weights_summarized = train_rgc_layer(
+    feature_matrix_summarized,
+    edge_list_summarized,
+    edge_type_summarized,
+    target_labels_summarized,
+    num_classes=3,  
+    transfer_weights=None, 
+    freeze_layers=False
+)
 
-# Yes, in the context of node classification in a graph using a model like an R-GCN 
-# (Relational Graph Convolutional Network), the concepts of feature matrices (X), 
-# target labels (Y), and loss calculation are directly related to how well 
-# the model predicts the class of each node. Here's how these concepts tie into node classification:
+## second model: Transfer weight and Freeze layer is kept True
+learned_weights_original = train_rgc_layer(
+    feature_matrix_summarized,
+    edge_list_summarized,
+    edge_type_summarized,
+    target_labels_summarized,
+    num_classes=3,  
+    transfer_weights=learned_weights_summarized,  # weight transfer
+    freeze_layers=True   ## freeze layer
+)
+
+
+## third model: Baseline Model 
+baseline_model = train_rgc_layer(
+    feature_matrix_baseline, 
+    edge_type_baseline, 
+    edge_list_baseline, 
+    target_labels_baseline,
+    num_classes=3,  
+    transfer_weights=None, 
+    freeze_layers=False  
+)
