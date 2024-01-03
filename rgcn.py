@@ -277,33 +277,38 @@ node_to_summarized_group, relationships_to_edgetype= get_required_mappings(node_
 ## get edge type and edge list and features mapping
 result = prepare_data(relationships_to_edgetype, node_to_summarized_group)
 
+def evaluate(rgcn_layer, dataset, weights_path=None):
+    tensor_X = dataset.x
+    edgeList = dataset.edge_index
+    edge_type = dataset.edge_attr
+    y_test = dataset.y
 
-def apply_and_evaluate(rgcn_layer_class, tensor_X, edgeList, edge_type, y_variable, num_classes):
-    # Instantiate the RGCN layer
-    in_channels = tensor_X.shape[1]
-    out_channels = num_classes
-    num_relations = torch.unique(edge_type_summarized)
-    num_relations = num_relations.numel()
-    print(num_relations)
-    rgcn_layer = rgcn_layer_class(in_channels, out_channels, num_relations)
+    # Load weights if provided
+    if weights_path is not None:
+        print("using transfered weights.. ")
+        state_dict = torch.load(weights_path)
+        rgcn_layer.load_state_dict(state_dict['rgcn_layer'])
 
-    # Load the saved state dict into the RGCN layer
-    rgcn_layer.load_state_dict(torch.load('learned_weights.pth')['rgcn_layer'])
-
-    # Set the RGCN layer to evaluation mode
+    # Set the model to evaluation mode
     rgcn_layer.eval()
 
-    # Apply the trained model to the test graph
+    # Evaluation
     criterion = torch.nn.BCEWithLogitsLoss()
     with torch.no_grad():
         output_test = rgcn_layer(x=tensor_X, edge_index=edgeList, edge_type=edge_type)
+        loss_test = criterion(output_test, y_test)
+        print(f"Test Loss: {loss_test.item()}")
 
-    # Evaluate the performance on the test graph
-    loss_test = criterion(input=output_test.view(y_variable.size()), target=y_variable)
-    print(f"Test Loss: {loss_test.item()}")
+    # Additional metrics can be added here (e.g., accuracy, F1-score, etc.)
+    # ...
 
+    return loss_test
 
-def train_rgc_layer(tensor_X, edgeList, edge_type, y_train, num_classes, transfer_weights, freeze_layers, num_epochs=51, lr=0.01):
+def train_rgc_layer(data, num_classes, transfer_weights, freeze_layers, num_epochs=51, lr=0.01):
+    tensor_X = data.x
+    edgeList = data.edge_index
+    edge_type = data.edge_attr
+    y_train = data.y
     in_channels = tensor_X.shape[1]
     out_channels = num_classes
     num_relations = torch.unique(edge_type_summarized)
@@ -349,8 +354,26 @@ def train_rgc_layer(tensor_X, edgeList, edge_type, y_train, num_classes, transfe
 
     learned_weights = {'rgcn_layer': rgcn_layer.state_dict()}
     torch.save(learned_weights, 'learned_weights.pth')
-    return learned_weights
+    return rgcn_layer, learned_weights
 
+def print_graph_details(baseline_data, summarized_data):
+    # Print details for baseline data
+    num_nodes_original = baseline_data.x.shape[0]
+    num_edges_original = baseline_data.edge_index.shape[1]
+    num_relation_types_original = torch.unique(baseline_data.edge_attr)
+
+    print(f"Baseline Data: Number of nodes = {num_nodes_original}")
+    print(f"Baseline Data: Number of edges = {num_edges_original}")
+    print(f"Baseline Data: Number of relation types = {num_relation_types_original.numel()}")
+
+    # Print details for summarized data
+    num_nodes_summarized = summarized_data.x.shape[0]
+    num_edges_summarized = summarized_data.edge_index.shape[1]
+    num_relation_types_summarized = torch.unique(summarized_data.edge_attr)
+
+    print(f"Summarized Data: Number of nodes = {num_nodes_summarized}")
+    print(f"Summarized Data: Number of edges = {num_edges_summarized}")
+    print(f"Summarized Data: Number of relation types = {num_relation_types_summarized.numel()}")
 
 
 ## GET DATA FOR SUMMARIZED MODEL
@@ -361,6 +384,7 @@ feature_matrix_summarized = torch.full((len(target_labels_summarized), 1), 1, dt
 ## GET DATA FOR BASELINE MODEL
 feature_matrix_baseline, edge_type_baseline, edge_list_baseline, target_labels_baseline = get_baseline_data(original_file)
 
+
 # Prepare data using Data object
 summarized_data = Data(x=feature_matrix_summarized, edge_index=edge_list_summarized, 
                        edge_attr=edge_type_summarized, y=target_labels_summarized)
@@ -369,7 +393,7 @@ baseline_data = Data(x=feature_matrix_baseline, edge_index=edge_list_baseline,
                      edge_attr=edge_type_baseline, y=target_labels_baseline)
 
 
-
+print_graph_details(baseline_data, summarized_data)
 
 
 # Set the ratios for validation and test sets
@@ -377,7 +401,7 @@ val_ratio = 0.05  # 5% of edges for validation
 test_ratio = 0.1  # 10% of edges for testing
 
 # Create the transform
-transform = RandomLinkSplit(is_undirected=False, # Set to False if your graph is directed
+transform = RandomLinkSplit(is_undirected=False, # Set to False since graph is directed
                             num_val=val_ratio, 
                             num_test=test_ratio)
 
@@ -385,28 +409,6 @@ transform = RandomLinkSplit(is_undirected=False, # Set to False if your graph is
 train_data_summarized, val_data_summarized, test_data_summarized = transform(summarized_data)
 ## SPLITTING BASELINE GRAPH DATA
 train_data_baseline, val_data_baseline, test_data_baseline = transform(baseline_data)
-
-
-
-
-
-# Print the number of nodes and edges in the original graph
-num_nodes_original = feature_matrix_baseline.shape[0]  # Assuming the number of nodes is the first dimension of features_train
-num_edges_original = edge_list_baseline.shape[1]  # Assuming edge_list_train is a 2xN matrix where N is the number of edges
-num_relation_types_original = torch.unique(edge_type_baseline)
-
-print(f"Original Graph: Number of nodes = {num_nodes_original}")
-print(f"Original Graph: Number of edges = {num_edges_original}")
-print(f"Original Graph: Number of relation types = {num_relation_types_original.numel()}")
-
-# Print the number of nodes and edges in the summarized graph
-num_nodes_summarized = feature_matrix_summarized.shape[0]  # Assuming the number of nodes is the first dimension of feature_matrix_summarized
-num_edges_summarized = edge_list_summarized.shape[1]  # Assuming edge_list_summarized is a 2xN matrix where N is the number of edges
-num_relation_types_summarized = torch.unique(edge_type_summarized)
-
-print(f"Summarized Graph: Number of nodes = {num_nodes_summarized}")
-print(f"Summarized Graph: Number of edges = {num_edges_summarized}")
-print(f"Summarized Graph: Number of relation types = {num_relation_types_summarized.numel()}")
 
 
 # Function to train the first model or load weights if they already exist
@@ -417,15 +419,14 @@ def train_or_load_first_model():
         return torch.load(filepath)
     else:
         print("Training the first model...")
-        learned_weights = train_rgc_layer(
-            train_data_summarized.x,
-            train_data_summarized.edge_index,
-            train_data_summarized.edge_attr,
-            train_data_summarized.y,
+        first_model, learned_weights = train_rgc_layer(
+            train_data_summarized,
             num_classes=3,
             transfer_weights=None,
             freeze_layers=False
         )
+        evaluate(first_model, test_data_summarized, weights_path='learned_weights.pth')
+        evaluate(first_model, test_data_summarized, weights_path=None)
         torch.save(learned_weights, filepath)
         return learned_weights
 
@@ -433,30 +434,28 @@ def train_or_load_first_model():
 transfer_weights = train_or_load_first_model()
 
 # Train the second model with transfer learning and layer freezing
-print("TRAINING THE SECOND MODEL ....TRANSFERRING WEIGHTS")
-learned_weights_original = train_rgc_layer(
-    train_data_summarized.x,
-    train_data_summarized.edge_index,
-    train_data_summarized.edge_attr,
-    train_data_summarized.y,
+print("TRAINING THE WEIGHT TRANSFER MODEL...")
+second_model_rgcn_layer, weights_second_model = train_rgc_layer(
+    train_data_summarized,
     num_classes=3,
     transfer_weights=transfer_weights,  # Use transferred weights
     freeze_layers=True  # Freeze layer
 )
 
 
-
-
-apply_and_evaluate(RGCNConv, test_data_summarized.x, test_data_summarized.edge_index, test_data_summarized.edge_attr, test_data_summarized.y, num_classes=3)
-
-
+print("EVALUATING THE SUMMARIZED GRAPH ON SECOND MODEL")
+# apply_and_evaluate(second_model_rgcn_layer, test_data_summarized.x, test_data_summarized.edge_index, test_data_summarized.edge_attr, test_data_summarized.y, num_classes=3)
+evaluate(second_model_rgcn_layer, test_data_summarized, weights_path='learned_weights.pth')
+evaluate(second_model_rgcn_layer, test_data_summarized, weights_path=None)
 # third model: Baseline Model 
-baseline_model = train_rgc_layer(
-    feature_matrix_baseline, 
-    edge_list_baseline, 
-    edge_type_baseline, 
-    target_labels_baseline,
+print("TRAINING THE BASELINE MODEL ...")
+baseline_model_rgcn_layer, weights_baseline_model = train_rgc_layer(
+    train_data_baseline,
     num_classes=3,  
     transfer_weights=None, 
     freeze_layers=False  
 )
+
+print("EVALUATING THE BASELINE GRAPH DATA ON BASELINE MODEL")
+# apply_and_evaluate(baseline_model_rgcn_layer, test_data_baseline.x, test_data_baseline.edge_index, test_data_baseline.edge_attr, test_data_baseline.y, num_classes=3)
+evaluate(baseline_model_rgcn_layer, test_data_baseline, weights_path=None)
