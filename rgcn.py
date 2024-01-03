@@ -282,7 +282,8 @@ def apply_and_evaluate(rgcn_layer_class, tensor_X, edgeList, edge_type, y_variab
     # Instantiate the RGCN layer
     in_channels = tensor_X.shape[1]
     out_channels = num_classes
-    num_relations = 16948
+    num_relations = torch.unique(edge_type_summarized)
+    num_relations = num_relations.numel()
     print(num_relations)
     rgcn_layer = rgcn_layer_class(in_channels, out_channels, num_relations)
 
@@ -302,10 +303,12 @@ def apply_and_evaluate(rgcn_layer_class, tensor_X, edgeList, edge_type, y_variab
     print(f"Test Loss: {loss_test.item()}")
 
 
-def train_rgc_layer(tensor_X, edgeList, edge_type, y_train, num_classes, transfer_weights, freeze_layers, num_relations,  num_epochs=51, lr=0.01):
+def train_rgc_layer(tensor_X, edgeList, edge_type, y_train, num_classes, transfer_weights, freeze_layers, num_epochs=51, lr=0.01):
     in_channels = tensor_X.shape[1]
     out_channels = num_classes
-    num_relations = len(set(edge_type))
+    num_relations = torch.unique(edge_type_summarized)
+    num_relations = num_relations.numel()
+    print(num_relations)
     edge_type = edge_type.squeeze()
 
     rgcn_layer = RGCNConv(in_channels, out_channels, num_relations)
@@ -368,12 +371,13 @@ baseline_data = Data(x=feature_matrix_baseline, edge_index=edge_list_baseline,
 
 
 
+
 # Set the ratios for validation and test sets
 val_ratio = 0.05  # 5% of edges for validation
 test_ratio = 0.1  # 10% of edges for testing
 
 # Create the transform
-transform = RandomLinkSplit(is_undirected=True, # Set to False if your graph is directed
+transform = RandomLinkSplit(is_undirected=False, # Set to False if your graph is directed
                             num_val=val_ratio, 
                             num_test=test_ratio)
 
@@ -381,6 +385,8 @@ transform = RandomLinkSplit(is_undirected=True, # Set to False if your graph is 
 train_data_summarized, val_data_summarized, test_data_summarized = transform(summarized_data)
 ## SPLITTING BASELINE GRAPH DATA
 train_data_baseline, val_data_baseline, test_data_baseline = transform(baseline_data)
+
+
 
 
 
@@ -428,15 +434,15 @@ transfer_weights = train_or_load_first_model()
 
 # Train the second model with transfer learning and layer freezing
 print("TRAINING THE SECOND MODEL ....TRANSFERRING WEIGHTS")
-# learned_weights_original = train_rgc_layer(
-#     train_data_summarized.x,
-#     train_data_summarized.edge_index,
-#     train_data_summarized.edge_attr,
-#     train_data_summarized.y,
-#     num_classes=3,
-#     transfer_weights=transfer_weights,  # Use transferred weights
-#     freeze_layers=True  # Freeze layer
-# )
+learned_weights_original = train_rgc_layer(
+    train_data_summarized.x,
+    train_data_summarized.edge_index,
+    train_data_summarized.edge_attr,
+    train_data_summarized.y,
+    num_classes=3,
+    transfer_weights=transfer_weights,  # Use transferred weights
+    freeze_layers=True  # Freeze layer
+)
 
 
 
@@ -445,12 +451,12 @@ apply_and_evaluate(RGCNConv, test_data_summarized.x, test_data_summarized.edge_i
 
 
 # third model: Baseline Model 
-# baseline_model = train_rgc_layer(
-#     feature_matrix_baseline, 
-#     edge_list_baseline, 
-#     edge_type_baseline, 
-#     target_labels_baseline,
-#     num_classes=3,  
-#     transfer_weights=None, 
-#     freeze_layers=False  
-# )
+baseline_model = train_rgc_layer(
+    feature_matrix_baseline, 
+    edge_list_baseline, 
+    edge_type_baseline, 
+    target_labels_baseline,
+    num_classes=3,  
+    transfer_weights=None, 
+    freeze_layers=False  
+)
