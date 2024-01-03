@@ -19,18 +19,28 @@ from torch_geometric.typing import (
     pyg_lib,
     torch_sparse,
 )
+
 from torch_geometric.utils import index_sort, one_hot, scatter, spmm
 from torch_geometric.utils.sparse import index2ptr
-import torch
+
+import os
+from torch_geometric.data import Data
+from torch_geometric.transforms import RandomLinkSplit
+
+from torch_geometric.utils import train_test_split_edges
 import csv
 import rdflib
+import numpy as np
+from collections import defaultdict
+from torch_geometric.data import Data
+import numpy as np
 
 ## open files
 node_features_file = "aifb_stripped.ntnode_ID" ## contains clusters and the number of nodes mapped to the
 edge_indices_file = "aifb_stripped.ntedge_ID"
 original_file = "aifb_stripped.nt"
 output_file = "here.txt"
-node_classes_file = 'node_classes.tsv'
+node_classes_file = 'testSet.tsv'
 
 def read_node_classes(file_path):
     """
@@ -153,6 +163,10 @@ def prepare_data(relationships_to_edgetype, node_to_updatedGroup):
             graph.parse(data=line, format="nt")
             parts = line.strip().split()           
             if len(parts)==4:
+                ## check if original is in test or train. 
+                ## if both in original, then append edge_list
+                ## features array basically contains nodeID = its features. 
+
                 original_subject = parts[0][1:-1]
                 original_object = parts[2][1:-1]
                 summarized_subject = node_to_updatedGroup[original_subject] # try abs
@@ -169,7 +183,6 @@ def prepare_data(relationships_to_edgetype, node_to_updatedGroup):
                     features[summarized_subject].append((original_subject, feature_type_subject))
                 if summarized_subject not in features:
                     features[summarized_subject] = [(original_subject, feature_type_object)]
-
                 if summarized_object in features:
                     features[summarized_object].append((original_object, feature_type_subject))
                 if summarized_object not in features:
@@ -178,6 +191,7 @@ def prepare_data(relationships_to_edgetype, node_to_updatedGroup):
     edge_list = [edge_list1, edge_list2]
     edge_list = torch.tensor(edge_list)
     edge_type = torch.tensor(edge_type)
+    print(edge_type)
     return edge_list, edge_type, features
 
 def create_target_matrix(nodes_dict):
@@ -205,7 +219,6 @@ def create_target_matrix(nodes_dict):
         for i in class_count:
             prob_val = i/total_weight
             row.append(prob_val)
-        # sprint(row)
         matrix.append(row)
     return torch.tensor(matrix)
 
@@ -258,21 +271,6 @@ def get_baseline_data(original_file):
     X_tensor = torch.full((len(y_labels), 1), 1, dtype=torch.float32)
     return X_tensor, edge_type_tensor, edge_list,  y_labels
 
-def create_sparse_feature_matrix(number_of_nodes):
-    # Creating a sparse identity matrix (one-hot encoding)
-    # Indices of non-zero elements
-    indices = torch.arange(0, number_of_nodes, dtype=torch.long).unsqueeze(0)
-    indices = torch.cat((indices, indices), dim=0)
-
-    # Values of non-zero elements
-    values = torch.ones(number_of_nodes)
-
-    # Create a sparse tensor
-    shape = (number_of_nodes, number_of_nodes)
-    feature_matrix_sparse = torch.sparse_coo_tensor(indices, values, shape)
-
-    return feature_matrix_sparse
-
 node_classes = read_node_classes(node_classes_file)    
 ## get required mapping for summarized graph
 node_to_summarized_group, relationships_to_edgetype= get_required_mappings(node_features_file=node_features_file, edge_indices_file=edge_indices_file, output_file=output_file)
@@ -280,32 +278,65 @@ node_to_summarized_group, relationships_to_edgetype= get_required_mappings(node_
 result = prepare_data(relationships_to_edgetype, node_to_summarized_group)
 
 
-def train_rgc_layer(tensor_X, edgeList, edge_type, y_train, num_classes=3, transfer_weights=None, freeze_layers=False, num_epochs=51, lr=0.01):
-    in_channels = tensor_X.shape[1]  # Assuming the number of features per node is the second dimension of tensor_X
+def apply_and_evaluate(rgcn_layer_class, tensor_X, edgeList, edge_type, y_variable, num_classes):
+    # Instantiate the RGCN layer
+    in_channels = tensor_X.shape[1]
+    out_channels = num_classes
+    num_relations = 16948
+    print(num_relations)
+    rgcn_layer = rgcn_layer_class(in_channels, out_channels, num_relations)
+
+    # Load the saved state dict into the RGCN layer
+    rgcn_layer.load_state_dict(torch.load('learned_weights.pth')['rgcn_layer'])
+
+    # Set the RGCN layer to evaluation mode
+    rgcn_layer.eval()
+
+    # Apply the trained model to the test graph
+    criterion = torch.nn.BCEWithLogitsLoss()
+    with torch.no_grad():
+        output_test = rgcn_layer(x=tensor_X, edge_index=edgeList, edge_type=edge_type)
+
+    # Evaluate the performance on the test graph
+    loss_test = criterion(input=output_test.view(y_variable.size()), target=y_variable)
+    print(f"Test Loss: {loss_test.item()}")
+
+
+def train_rgc_layer(tensor_X, edgeList, edge_type, y_train, num_classes, transfer_weights, freeze_layers, num_relations,  num_epochs=51, lr=0.01):
+    in_channels = tensor_X.shape[1]
     out_channels = num_classes
     num_relations = len(set(edge_type))
-    hidden_units = 16  # Number of hidden units as per literature
+    edge_type = edge_type.squeeze()
 
-    # Create an instance of RGCNConv without basis decomposition
-    rgcn_layer1 = RGCNConv(in_channels, hidden_units, num_relations, num_bases=None, num_blocks=None)
-    rgcn_layer2 = RGCNConv(hidden_units, out_channels, num_relations, num_bases=None, num_blocks=None)
+    rgcn_layer = RGCNConv(in_channels, out_channels, num_relations)
 
+    # Load weights if available
     if transfer_weights is not None:
-        rgcn_layer1.load_state_dict(transfer_weights['rgcn_layer1'])
-        rgcn_layer2.load_state_dict(transfer_weights['rgcn_layer2'])
-        if freeze_layers:
-            for param in rgcn_layer1.parameters():
-                param.requires_grad = False
-            for param in rgcn_layer2.parameters():
-                param.requires_grad = False
+        rgcn_layer.load_state_dict(transfer_weights['rgcn_layer'])
 
+    # Modify this part to selectively freeze layers
+    if freeze_layers:
+        # Example: Freeze the first few layers of rgcn_layer
+        # You need to adjust this based on the actual architecture of your RGCN
+        for name, param in rgcn_layer.named_parameters():
+            if 'layer1' in name:  # Replace 'layer1' with actual layer names
+                param.requires_grad = False
+                print(f"Freezing {name}")
+            else:
+                print(f"Training {name}")
+
+    trainable_params = [p for p in rgcn_layer.parameters() if p.requires_grad]
+
+    if not trainable_params:
+        print("No trainable parameters. Skipping training.")
+        return {'rgcn_layer': rgcn_layer.state_dict()}
+
+    optimizer = torch.optim.Adam(trainable_params, lr=lr, weight_decay=5.0e-4)
     criterion = torch.nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.Adam(list(rgcn_layer1.parameters()) + list(rgcn_layer2.parameters()), lr=1.0e-2, weight_decay=5.0e-4)  # Adjusted learning rate and weight decay
 
     for epoch in range(num_epochs):
         optimizer.zero_grad()
-        x_intermediate = rgcn_layer1(x=tensor_X, edge_index=edgeList, edge_type=edge_type)
-        output_train = rgcn_layer2(x=x_intermediate, edge_index=edgeList, edge_type=edge_type)
+        output_train = rgcn_layer(x=tensor_X, edge_index=edgeList, edge_type=edge_type)
         loss_train = criterion(output_train, y_train)
         loss_train.backward()
         optimizer.step()
@@ -313,20 +344,10 @@ def train_rgc_layer(tensor_X, edgeList, edge_type, y_train, num_classes=3, trans
         if epoch % 10 == 0:
             print(f"Epoch {epoch}, Train Loss: {loss_train.item()}")
 
-    learned_weights = {'rgcn_layer1': rgcn_layer1.state_dict(), 'rgcn_layer2': rgcn_layer2.state_dict()}
+    learned_weights = {'rgcn_layer': rgcn_layer.state_dict()}
     torch.save(learned_weights, 'learned_weights.pth')
     return learned_weights
 
-def apply_and_evaluate(rgcn_layer, tensor_X, edgeList, edge_type, y_variable):
-    # Apply the trained model to the test graph
-    rgcn_layer.load_state_dict(torch.load('learned_weights.pth'))
-    rgcn_layer.eval()
-    with torch.no_grad():
-        output_test = rgcn_layer(x=tensor_X, edge_index=edgeList, edge_type=edge_type)
-
-    # Evaluate the performance on the test graph
-    loss_test = criterion(input=output_test.view(y_test.size()), target=y_variable)
-    print(f"Test Loss: {loss_test.item()}")
 
 
 ## GET DATA FOR SUMMARIZED MODEL
@@ -337,51 +358,99 @@ feature_matrix_summarized = torch.full((len(target_labels_summarized), 1), 1, dt
 ## GET DATA FOR BASELINE MODEL
 feature_matrix_baseline, edge_type_baseline, edge_list_baseline, target_labels_baseline = get_baseline_data(original_file)
 
+# Prepare data using Data object
+summarized_data = Data(x=feature_matrix_summarized, edge_index=edge_list_summarized, 
+                       edge_attr=edge_type_summarized, y=target_labels_summarized)
+
+baseline_data = Data(x=feature_matrix_baseline, edge_index=edge_list_baseline, 
+                     edge_attr=edge_type_baseline, y=target_labels_baseline)
+
+
+
+
+# Set the ratios for validation and test sets
+val_ratio = 0.05  # 5% of edges for validation
+test_ratio = 0.1  # 10% of edges for testing
+
+# Create the transform
+transform = RandomLinkSplit(is_undirected=True, # Set to False if your graph is directed
+                            num_val=val_ratio, 
+                            num_test=test_ratio)
+
+## SPLITTING SUMMARIZED GRAPH DATA
+train_data_summarized, val_data_summarized, test_data_summarized = transform(summarized_data)
+## SPLITTING BASELINE GRAPH DATA
+train_data_baseline, val_data_baseline, test_data_baseline = transform(baseline_data)
+
+
+
 # Print the number of nodes and edges in the original graph
 num_nodes_original = feature_matrix_baseline.shape[0]  # Assuming the number of nodes is the first dimension of features_train
 num_edges_original = edge_list_baseline.shape[1]  # Assuming edge_list_train is a 2xN matrix where N is the number of edges
+num_relation_types_original = torch.unique(edge_type_baseline)
 
 print(f"Original Graph: Number of nodes = {num_nodes_original}")
 print(f"Original Graph: Number of edges = {num_edges_original}")
+print(f"Original Graph: Number of relation types = {num_relation_types_original.numel()}")
 
 # Print the number of nodes and edges in the summarized graph
 num_nodes_summarized = feature_matrix_summarized.shape[0]  # Assuming the number of nodes is the first dimension of feature_matrix_summarized
 num_edges_summarized = edge_list_summarized.shape[1]  # Assuming edge_list_summarized is a 2xN matrix where N is the number of edges
+num_relation_types_summarized = torch.unique(edge_type_summarized)
 
 print(f"Summarized Graph: Number of nodes = {num_nodes_summarized}")
 print(f"Summarized Graph: Number of edges = {num_edges_summarized}")
+print(f"Summarized Graph: Number of relation types = {num_relation_types_summarized.numel()}")
 
 
-## first model: summarized graph
-learned_weights_summarized = train_rgc_layer(
-    feature_matrix_summarized,
-    edge_list_summarized,
-    edge_type_summarized,
-    target_labels_summarized,
-    num_classes=3,  
-    transfer_weights=None, 
-    freeze_layers=False
-)
+# Function to train the first model or load weights if they already exist
+def train_or_load_first_model():
+    filepath = 'learned_weights.pth'
+    if os.path.exists(filepath):
+        print("Loading weights from:", filepath)
+        return torch.load(filepath)
+    else:
+        print("Training the first model...")
+        learned_weights = train_rgc_layer(
+            train_data_summarized.x,
+            train_data_summarized.edge_index,
+            train_data_summarized.edge_attr,
+            train_data_summarized.y,
+            num_classes=3,
+            transfer_weights=None,
+            freeze_layers=False
+        )
+        torch.save(learned_weights, filepath)
+        return learned_weights
 
-## second model: Transfer weight and Freeze layer is kept True
-learned_weights_original = train_rgc_layer(
-    feature_matrix_summarized,
-    edge_list_summarized,
-    edge_type_summarized,
-    target_labels_summarized,
-    num_classes=3,  
-    transfer_weights=learned_weights_summarized,  # weight transfer
-    freeze_layers=True   ## freeze layer
-)
+# Train the first model or load weights
+transfer_weights = train_or_load_first_model()
+
+# Train the second model with transfer learning and layer freezing
+print("TRAINING THE SECOND MODEL ....TRANSFERRING WEIGHTS")
+# learned_weights_original = train_rgc_layer(
+#     train_data_summarized.x,
+#     train_data_summarized.edge_index,
+#     train_data_summarized.edge_attr,
+#     train_data_summarized.y,
+#     num_classes=3,
+#     transfer_weights=transfer_weights,  # Use transferred weights
+#     freeze_layers=True  # Freeze layer
+# )
 
 
-## third model: Baseline Model 
-baseline_model = train_rgc_layer(
-    feature_matrix_baseline, 
-    edge_type_baseline, 
-    edge_list_baseline, 
-    target_labels_baseline,
-    num_classes=3,  
-    transfer_weights=None, 
-    freeze_layers=False  
-)
+
+
+apply_and_evaluate(RGCNConv, test_data_summarized.x, test_data_summarized.edge_index, test_data_summarized.edge_attr, test_data_summarized.y, num_classes=3)
+
+
+# third model: Baseline Model 
+# baseline_model = train_rgc_layer(
+#     feature_matrix_baseline, 
+#     edge_list_baseline, 
+#     edge_type_baseline, 
+#     target_labels_baseline,
+#     num_classes=3,  
+#     transfer_weights=None, 
+#     freeze_layers=False  
+# )
