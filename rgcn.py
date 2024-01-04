@@ -68,7 +68,6 @@ def read_node_classes(file_path):
         for row in reader:
             for i, value in enumerate(row):
                 column_sets[i].add(value)
-
     return column_sets
 
 def get_required_mappings(output_file, node_features_file, edge_indices_file):
@@ -117,7 +116,7 @@ def get_required_mappings(output_file, node_features_file, edge_indices_file):
     with open(edge_indices_file, "r") as f:
         for line in f:
             parts = line.strip().split()
-            edge_label = parts[0]
+            edge_label = parts[0][1:-1]
             edge_ID = int(parts[1])
             relationships_to_edgetype[edge_label] =  edge_ID
     
@@ -136,10 +135,14 @@ def get_node_class(node):
     
     if node in node_classes[0]:
         return 1
-    if node in node_classes[2]:
+    if node in node_classes[1]:
         return 2
+    if node in node_classes[2]:
+        return 3
     else:
         return 0
+
+import re
 
 def prepare_data(relationships_to_edgetype, node_to_updatedGroup):
     '''
@@ -158,43 +161,49 @@ def prepare_data(relationships_to_edgetype, node_to_updatedGroup):
     edge_list2 = []
     edge_type = []
     features={}
+    missed_entries = 0
+    graph = Graph()
+    edge_list1 = []
+    edge_list2 = []
+    edge_type = []
+    features={}
     with open(original_file, "r") as f:
         for line in f:
             graph.parse(data=line, format="nt")
-            parts = line.strip().split()           
-            if len(parts)==4:
-                ## check if original is in test or train. 
-                ## if both in original, then append edge_list
-                ## features array basically contains nodeID = its features. 
-
+            parts = line.strip().split()      
+            if len(parts)>2:
                 original_subject = parts[0][1:-1]
                 original_object = parts[2][1:-1]
-                summarized_subject = node_to_updatedGroup[original_subject] # try abs
-                summarized_object = node_to_updatedGroup[original_object] 
-                relationship = relationships_to_edgetype[str(parts[1])]
+                if (original_subject not in node_to_updatedGroup) or (original_object not in node_to_updatedGroup):
+                    pass
+                else:
+                    summarized_subject = node_to_updatedGroup[original_subject] # try abs
+                    summarized_object = node_to_updatedGroup[original_object] 
+                    relationship = relationships_to_edgetype[str(parts[1][1:-1])]
+                    
+                    edge_list1.append(summarized_subject)
+                    edge_type.append(relationship)
+                    edge_list2.append(summarized_object)
+                    feature_type_subject = get_node_class(original_subject)
+                    feature_type_object = get_node_class(original_object)
 
-                edge_list1.append(summarized_subject)
-                edge_type.append(relationship)
-                edge_list2.append(summarized_object)
-                feature_type_subject = get_node_class(original_subject)
-                feature_type_object = get_node_class(original_object)
-
-                if summarized_subject in features:
-                    features[summarized_subject].append((original_subject, feature_type_subject))
-                if summarized_subject not in features:
-                    features[summarized_subject] = [(original_subject, feature_type_object)]
-                if summarized_object in features:
-                    features[summarized_object].append((original_object, feature_type_subject))
-                if summarized_object not in features:
-                    features[summarized_object] = [(original_object, feature_type_object)]
+                    if summarized_subject in features:
+                        features[summarized_subject].append((original_subject, feature_type_subject))
+                    if summarized_subject not in features:
+                        features[summarized_subject] = [(original_subject, feature_type_object)]
+                    if summarized_object in features:
+                        features[summarized_object].append((original_object, feature_type_subject))
+                    if summarized_object not in features:
+                        features[summarized_object] = [(original_object, feature_type_object)]
+            else:
+                missed_entries+=1
                 
     edge_list = [edge_list1, edge_list2]
     edge_list = torch.tensor(edge_list)
     edge_type = torch.tensor(edge_type)
-    print(edge_type)
     return edge_list, edge_type, features
 
-def create_target_matrix(nodes_dict):
+def create_target_matrix(nodes_dict, num_classes):
     '''
     Gets the target tensor matrix using the features mapping.
 
@@ -210,7 +219,7 @@ def create_target_matrix(nodes_dict):
     count = 0
     for group_id in nodes_dict:
         
-        class_count = [0,0,0]
+        class_count = [0] * num_classes
         total_weight = 0
         row = []
         for node, class_type in nodes_dict[group_id]:
@@ -224,7 +233,7 @@ def create_target_matrix(nodes_dict):
 
 def get_baseline_data(original_file):
     # Load RDF data from NT file
-    g = Graph()
+    graph = Graph()
     # Process RDF data to create tensors for RGCN
     node_dict = {}
     edge_list = []
@@ -236,13 +245,14 @@ def get_baseline_data(original_file):
     edge_list2 = []
     with open(original_file, "r") as f:
         for line in f:
-            g.parse(data=line, format="nt")
-            parts = line.strip().split()           
+            graph.parse(data=line, format="nt")
+            parts = line.strip().split()      
             if len(parts)>2:
                 subj = parts[0][1:-1]
                 obj = parts[2][1:-1]
                 # print(parts[1])
-                pred = relationships_to_edgetype[str(parts[1])]
+                pred = str(parts[1][1:-1])
+                pred = relationships_to_edgetype[pred]
                 # Node processing
                 # Node processing
                 if subj not in node_dict:
@@ -256,7 +266,7 @@ def get_baseline_data(original_file):
                 edge_list2.append(node_dict[obj])
 
     # Tensor creation
-    y_labels = torch.zeros((len(node_dict), 3))  # Assuming two features for each node
+    y_labels = torch.zeros((len(node_dict), 4))  # Assuming two features for each node
     # X_tensor = torch.zeros(len(node_dict), 4)
 
     for uri, index in node_dict.items():
@@ -271,7 +281,8 @@ def get_baseline_data(original_file):
     X_tensor = torch.full((len(y_labels), 1), 1, dtype=torch.float32)
     return X_tensor, edge_type_tensor, edge_list,  y_labels
 
-node_classes = read_node_classes(node_classes_file)    
+node_classes = read_node_classes(node_classes_file)   
+num_classes = len(node_classes) + 1 
 ## get required mapping for summarized graph
 node_to_summarized_group, relationships_to_edgetype= get_required_mappings(node_features_file=node_features_file, edge_indices_file=edge_indices_file, output_file=output_file)
 ## get edge type and edge list and features mapping
@@ -304,47 +315,57 @@ def evaluate(rgcn_layer, dataset, weights_path=None):
 
     return loss_test
 
+class TwoLayerRGCN(torch.nn.Module):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_relations):
+        super(TwoLayerRGCN, self).__init__()
+        self.rgcn1 = RGCNConv(in_channels, hidden_channels, num_relations)
+        self.rgcn2 = RGCNConv(hidden_channels, out_channels, num_relations)
+
+    def forward(self, x, edge_index, edge_type):
+        x = self.rgcn1(x, edge_index, edge_type)
+        x = torch.relu(x)
+        x = self.rgcn2(x, edge_index, edge_type)
+        return x
+
 def train_rgc_layer(data, num_classes, transfer_weights, freeze_layers, num_epochs=51, lr=0.01):
     tensor_X = data.x
     edgeList = data.edge_index
     edge_type = data.edge_attr
     y_train = data.y
+
     in_channels = tensor_X.shape[1]
+    hidden_channels = 16  # Number of hidden units as per literature
     out_channels = num_classes
-    num_relations = torch.unique(edge_type_summarized)
-    num_relations = num_relations.numel()
-    print(num_relations)
+    num_relations = torch.unique(edge_type).numel()
     edge_type = edge_type.squeeze()
 
-    rgcn_layer = RGCNConv(in_channels, out_channels, num_relations)
+    model = TwoLayerRGCN(in_channels, hidden_channels, out_channels, num_relations)
 
     # Load weights if available
     if transfer_weights is not None:
-        rgcn_layer.load_state_dict(transfer_weights['rgcn_layer'])
+        model.load_state_dict(transfer_weights['rgcn_layer'])
 
     # Modify this part to selectively freeze layers
     if freeze_layers:
-        # Example: Freeze the first few layers of rgcn_layer
-        # You need to adjust this based on the actual architecture of your RGCN
-        for name, param in rgcn_layer.named_parameters():
-            if 'layer1' in name:  # Replace 'layer1' with actual layer names
+        for name, param in model.named_parameters():
+            if 'rgcn1' in name:  # Example for freezing the first layer
                 param.requires_grad = False
                 print(f"Freezing {name}")
             else:
                 print(f"Training {name}")
 
-    trainable_params = [p for p in rgcn_layer.parameters() if p.requires_grad]
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
 
     if not trainable_params:
         print("No trainable parameters. Skipping training.")
-        return {'rgcn_layer': rgcn_layer.state_dict()}
+        return model, {'rgcn_layer': model.state_dict()}
 
     optimizer = torch.optim.Adam(trainable_params, lr=lr, weight_decay=5.0e-4)
     criterion = torch.nn.BCEWithLogitsLoss()
 
     for epoch in range(num_epochs):
         optimizer.zero_grad()
-        output_train = rgcn_layer(x=tensor_X, edge_index=edgeList, edge_type=edge_type)
+        output_train = model(tensor_X, edgeList, edge_type)
         loss_train = criterion(output_train, y_train)
         loss_train.backward()
         optimizer.step()
@@ -352,33 +373,42 @@ def train_rgc_layer(data, num_classes, transfer_weights, freeze_layers, num_epoc
         if epoch % 10 == 0:
             print(f"Epoch {epoch}, Train Loss: {loss_train.item()}")
 
-    learned_weights = {'rgcn_layer': rgcn_layer.state_dict()}
+    learned_weights = {'rgcn_layer': model.state_dict()}
     torch.save(learned_weights, 'learned_weights.pth')
-    return rgcn_layer, learned_weights
+    return model, learned_weights
 
 def print_graph_details(baseline_data, summarized_data):
     # Print details for baseline data
     num_nodes_original = baseline_data.x.shape[0]
     num_edges_original = baseline_data.edge_index.shape[1]
     num_relation_types_original = torch.unique(baseline_data.edge_attr)
+    num_classes_original = baseline_data.y.shape[1]
+    num_features_original = baseline_data.x.shape[1]
 
     print(f"Baseline Data: Number of nodes = {num_nodes_original}")
     print(f"Baseline Data: Number of edges = {num_edges_original}")
     print(f"Baseline Data: Number of relation types = {num_relation_types_original.numel()}")
+    print(f"Baseline Data: Number of classes = {num_classes_original}")
+    print(f"Baseline Data: Number of features = {num_features_original}")
 
     # Print details for summarized data
     num_nodes_summarized = summarized_data.x.shape[0]
     num_edges_summarized = summarized_data.edge_index.shape[1]
     num_relation_types_summarized = torch.unique(summarized_data.edge_attr)
+    num_classes_summarized = summarized_data.y.shape[1]
+    num_features_summarized = summarized_data.x.shape[1]
 
     print(f"Summarized Data: Number of nodes = {num_nodes_summarized}")
     print(f"Summarized Data: Number of edges = {num_edges_summarized}")
     print(f"Summarized Data: Number of relation types = {num_relation_types_summarized.numel()}")
+    print(f"Summarized Data: Number of classes = {num_classes_summarized}")
+    print(f"Summarized Data: Number of features = {num_features_summarized}")
+
 
 
 ## GET DATA FOR SUMMARIZED MODEL
 edge_list_summarized, edge_type_summarized, class_nodes = result # edge list and edgetype
-target_labels_summarized = create_target_matrix(class_nodes) # Y_labels
+target_labels_summarized = create_target_matrix(class_nodes, num_classes) # Y_labels
 feature_matrix_summarized = torch.full((len(target_labels_summarized), 1), 1, dtype=torch.float32) # feature matrix
 
 ## GET DATA FOR BASELINE MODEL
@@ -391,6 +421,7 @@ summarized_data = Data(x=feature_matrix_summarized, edge_index=edge_list_summari
 
 baseline_data = Data(x=feature_matrix_baseline, edge_index=edge_list_baseline, 
                      edge_attr=edge_type_baseline, y=target_labels_baseline)
+
 
 
 print_graph_details(baseline_data, summarized_data)
@@ -421,7 +452,7 @@ def train_or_load_first_model():
         print("Training the first model...")
         first_model, learned_weights = train_rgc_layer(
             train_data_summarized,
-            num_classes=3,
+            num_classes,
             transfer_weights=None,
             freeze_layers=False
         )
@@ -437,7 +468,7 @@ transfer_weights = train_or_load_first_model()
 print("TRAINING THE WEIGHT TRANSFER MODEL...")
 second_model_rgcn_layer, weights_second_model = train_rgc_layer(
     train_data_summarized,
-    num_classes=3,
+    num_classes,
     transfer_weights=transfer_weights,  # Use transferred weights
     freeze_layers=True  # Freeze layer
 )
@@ -451,7 +482,7 @@ evaluate(second_model_rgcn_layer, test_data_summarized, weights_path=None)
 print("TRAINING THE BASELINE MODEL ...")
 baseline_model_rgcn_layer, weights_baseline_model = train_rgc_layer(
     train_data_baseline,
-    num_classes=3,  
+    num_classes,  
     transfer_weights=None, 
     freeze_layers=False  
 )
