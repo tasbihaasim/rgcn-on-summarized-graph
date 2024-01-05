@@ -45,13 +45,22 @@ class TwoLayerRGCN(torch.nn.Module):
         x = torch.relu(x)
         x = self.rgcn2(x, edge_index, edge_type)
         return x
+    
+class OneLayerRGCN(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, num_relations):
+        super(OneLayerRGCN, self).__init__()
+        self.rgcn1 = RGCNConv(in_channels, out_channels, num_relations)
 
-def train_rgc_layer(data, transfer_weights, freeze_layers, num_epochs=51, lr=0.01):
+    def forward(self, x, edge_index, edge_type):
+        x = self.rgcn1(x, edge_index, edge_type)
+        return x
+
+def train_rgc_layer(data, transfer_weights, freeze_layers, num_epochs=51, lr=0.01, num_layers = 2):
     tensor_X = data.x
     edgeList = data.edge_index
     edge_type = data.edge_attr
     y_train = data.y
-
+    epoch_loss_array = []
     num_classes = y_train.shape[1]
     in_channels = tensor_X.shape[1]
     hidden_channels = 16  # Number of hidden units as per literature
@@ -59,8 +68,13 @@ def train_rgc_layer(data, transfer_weights, freeze_layers, num_epochs=51, lr=0.0
     num_relations = 45 #torch.unique(edge_type).numel()
     edge_type = edge_type.squeeze()
 
-    model = TwoLayerRGCN(in_channels, hidden_channels, out_channels, num_relations)
-
+    if num_layers == 1:
+        model = OneLayerRGCN(in_channels, out_channels, num_relations)
+    elif num_layers == 2:
+        model = TwoLayerRGCN(in_channels, hidden_channels, out_channels, num_relations)
+    else:
+        raise ValueError("Number of layers must be 1 or 2.")
+    
     # Load weights if available
     if transfer_weights is not None:
         model.load_state_dict(transfer_weights['rgcn_layer'])
@@ -78,11 +92,10 @@ def train_rgc_layer(data, transfer_weights, freeze_layers, num_epochs=51, lr=0.0
 
     if not trainable_params:
         print("No trainable parameters. Skipping training.")
-        return model, {'rgcn_layer': model.state_dict()}
-
+        return model, {'rgcn_layer': model.state_dict()}, epoch_loss_array
+    learned_weights = {}
     optimizer = torch.optim.Adam(trainable_params, lr=lr, weight_decay=5.0e-4)
     criterion = torch.nn.BCEWithLogitsLoss()
-    epoch_loss_array = []
     for epoch in range(num_epochs):
         optimizer.zero_grad()
         output_train = model(tensor_X, edgeList, edge_type)
@@ -96,6 +109,7 @@ def train_rgc_layer(data, transfer_weights, freeze_layers, num_epochs=51, lr=0.0
 
     learned_weights = {'rgcn_layer': model.state_dict()}
     torch.save(learned_weights, 'learned_weights.pth')
+    
     return model, learned_weights, epoch_loss_array
 
 def print_graph_details(baseline_data, summarized_data):
@@ -141,7 +155,7 @@ def calculate_resource_utilization():
 
 import os
 
-def run_experiment(baseline_data, summarized_data):
+def run_experiment(baseline_data, summarized_data, num_layers):
     # Set the ratios for validation and test sets
     val_ratio = 0.05  # 5% of edges for validation
     test_ratio = 0.1  # 10% of edges for testing
@@ -174,7 +188,8 @@ def run_experiment(baseline_data, summarized_data):
         summarized_model, transfer_weights, epoch_loss_array = train_rgc_layer(
             train_data_summarized,
             transfer_weights=None,
-            freeze_layers=False
+            freeze_layers=False,
+            num_layers=num_layers
         )
         accuracy_dict['summarized_model'] = float(evaluate(summarized_model, test_data_summarized, weights_path='learned_weights.pth'))
         torch.save(transfer_weights, filepath)
@@ -188,11 +203,12 @@ def run_experiment(baseline_data, summarized_data):
 
     # Train the transfer model
     print("Training the transfer model...")
-    transfer_model, weights_transfer_model, epoch_loss_array = train_rgc_layer(
+    transfer_model, weights_transfer_model, epoch_loss_array = (train_rgc_layer(
         train_data_summarized,
         transfer_weights=transfer_weights,
-        freeze_layers=True
-    )
+        freeze_layers=True, 
+        num_layers=num_layers
+    ))
     accuracy_dict['transfer_model'] = float(evaluate(transfer_model, test_data_summarized, weights_path=None))
 
     # Resource utilization after transfer model runs
@@ -207,7 +223,8 @@ def run_experiment(baseline_data, summarized_data):
     baseline_model, weights_baseline_model, epoch_loss_array = train_rgc_layer(
         train_data_baseline,
         transfer_weights=None,
-        freeze_layers=False
+        freeze_layers=False, 
+        num_layers=num_layers
     )
     accuracy_dict['baseline_model']=float(evaluate(baseline_model, test_data_baseline, weights_path=None))
 
@@ -233,10 +250,10 @@ baseline_data, summarized_data = get_data()
 print_graph_details(baseline_data, summarized_data)
 
 
-x = run_experiment(baseline_data, summarized_data)
+x = run_experiment(baseline_data, summarized_data, 2)
 for i in x:
     print(i)
-    
+
 
 
 
