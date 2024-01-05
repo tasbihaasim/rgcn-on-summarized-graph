@@ -11,11 +11,11 @@ import numpy as np
 import re
 
 ## open files
-node_features_file = "aifb_stripped.ntnode_ID" ## contains clusters and the number of nodes mapped to the
+node_features_file = "aifb_stripped.ntnode_ID" 
 edge_indices_file = "aifb_stripped.ntedge_ID"
 original_file = "aifb_stripped.nt"
 output_file = "here.txt"
-node_classes_file = 'testSet.tsv'
+node_classes_file = 'data/aifb/raw/completeDataset.tsv'
 
 def read_node_classes(file_path):
     """
