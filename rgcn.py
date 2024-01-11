@@ -6,6 +6,14 @@ from torch_geometric.data import Data
 from torch_geometric.transforms import RandomLinkSplit
 import numpy as np
 from data_processing import get_data
+import psutil
+
+import matplotlib.pyplot as plt
+import pandas as pd
+from codecarbon import EmissionsTracker
+import uuid
+
+process = psutil.Process()
 
 def evaluate(rgcn_layer, dataset, weights_path=None):
     tensor_X = dataset.x
@@ -34,6 +42,15 @@ def evaluate(rgcn_layer, dataset, weights_path=None):
 
     return loss_test
 
+def calculate_accuracy(outputs, targets):
+    # Assuming outputs are logits and targets are one-hot encoded
+    predicted_classes = torch.argmax(torch.sigmoid(outputs), dim=1)
+    true_classes = torch.argmax(targets, dim=1)
+    correct = (predicted_classes == true_classes).sum().item()
+    total = targets.size(0)
+    accuracy = correct / total
+    return accuracy
+
 class TwoLayerRGCN(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, num_relations):
         super(TwoLayerRGCN, self).__init__()
@@ -61,6 +78,7 @@ def train_rgc_layer(data, transfer_weights, freeze_layers, num_epochs=51, lr=0.0
     edge_type = data.edge_attr
     y_train = data.y
     epoch_loss_array = []
+    epoch_accuracy_array = []
     num_classes = y_train.shape[1]
     in_channels = tensor_X.shape[1]
     hidden_channels = 16  # Number of hidden units as per literature
@@ -92,7 +110,7 @@ def train_rgc_layer(data, transfer_weights, freeze_layers, num_epochs=51, lr=0.0
 
     if not trainable_params:
         print("No trainable parameters. Skipping training.")
-        return model, {'rgcn_layer': model.state_dict()}, epoch_loss_array
+        return model, {'rgcn_layer': model.state_dict()}, epoch_loss_array, epoch_accuracy_array
     learned_weights = {}
     optimizer = torch.optim.Adam(trainable_params, lr=lr, weight_decay=5.0e-4)
     criterion = torch.nn.BCEWithLogitsLoss()
@@ -100,17 +118,19 @@ def train_rgc_layer(data, transfer_weights, freeze_layers, num_epochs=51, lr=0.0
         optimizer.zero_grad()
         output_train = model(tensor_X, edgeList, edge_type)
         loss_train = criterion(output_train, y_train)
+        accuracy_train = calculate_accuracy(output_train, y_train)
         loss_train.backward()
         optimizer.step()
 
         if epoch % 10 == 0:
             print(f"Epoch {epoch}, Train Loss: {loss_train.item()}")
             epoch_loss_array.append(loss_train.item())
+            epoch_accuracy_array.append(accuracy_train)
 
     learned_weights = {'rgcn_layer': model.state_dict()}
     torch.save(learned_weights, 'learned_weights.pth')
     
-    return model, learned_weights, epoch_loss_array
+    return model, learned_weights, epoch_loss_array, epoch_accuracy_array
 
 def print_graph_details(baseline_data, summarized_data):
     # Print details for baseline data
@@ -139,21 +159,54 @@ def print_graph_details(baseline_data, summarized_data):
     print(f"Summarized Data: Number of classes = {num_classes_summarized}")
     print(f"Summarized Data: Number of features = {num_features_summarized}")
 
-
-import psutil
-
 def calculate_resource_utilization():
-    # Get CPU utilization
-    cpu_usage = psutil.cpu_percent()
+    # Get the process object for the current process
+    process = psutil.Process()
+
+    # Get CPU times (user and system)
+    cpu_times = process.cpu_times()
+    total_cpu_time = cpu_times.user + cpu_times.system
 
     # Get memory utilization
     memory_usage = psutil.virtual_memory().percent
 
     # Return a dictionary with CPU and memory utilization
-    return {'cpu_usage': cpu_usage, 'memory_usage': memory_usage}
+    return {'cpu_usage': total_cpu_time, 'memory_usage': memory_usage}
 
+def plot_analysis(epoch_loss_dict, epoch_accuracy_dict, accuracy_dict):
+    # Convert dictionaries to dataframes for easier plottinimport matplotlib.pyplot as plt
 
-import os
+    # Plotting
+    epochs = range(1, len(epoch_loss_dict['transfer_model']) + 1)
+
+    # Plotting transfer_model epoch loss in blue
+    plt.plot(epochs, epoch_loss_dict['transfer_model'], 'b-', label='Loss Transfer Learning')
+
+    # Plotting transfer_model accuracy in red
+    plt.plot(epochs, epoch_accuracy_dict['transfer_model'], 'r-', label='Performance Transfer Learning')
+
+    # Plotting baseline_model epoch loss in yellow
+    plt.plot(epochs, epoch_loss_dict['baseline_model'], 'y-', label='Loss Baseline Model')
+
+    # Plotting baseline_model accuracy in green
+    plt.plot(epochs, epoch_accuracy_dict['baseline_model'], 'g-', label='Performance Baseline Model')
+
+    # Adding labels and title
+    plt.xlabel('Time (epochs)')
+    plt.ylabel('Accuracy/Loss')
+    plt.title('Time Series Graph of Accuracy and Loss')
+    plt.legend()
+
+    # Display the plot
+    plt.show()
+
+    # Plot 2: Bar Chart for Test Loss
+    plt.figure()
+    pd.Series(accuracy_dict).plot(kind='bar', color='skyblue')
+    plt.ylabel('Test Loss')
+    plt.title('Test Loss Comparison')
+    plt.xticks(rotation=45)
+    plt.show()
 
 def run_experiment(baseline_data, summarized_data, num_layers):
     # Set the ratios for validation and test sets
@@ -171,12 +224,11 @@ def run_experiment(baseline_data, summarized_data, num_layers):
     train_data_baseline, val_data_baseline, test_data_baseline = transform(baseline_data)
 
     # Initialize dictionaries
-    epoch_loss_dict = {'summarized_model': [], 'transfer_model': [], 'baseline_model': []}
-    accuracy_dict = {'summarized_model': 0.0, 'transfer_model': 0.0, 'baseline_model': 0.0}
-    resource_utilization_dict = {'summarized_model': {}, 'transfer_model': {}, 'baseline_model': {}}
+    epoch_loss_dict = {'transfer_model': [], 'baseline_model': []}
+    epoch_accuracy_dict = {'transfer_model': [], 'baseline_model': []}
+    accuracy_dict = {'transfer_model': 0.0, 'baseline_model': 0.0}
+    emissions_dict = {'transfer_model': 0.0, 'baseline_model': 0.0}
 
-    # Resource utilization before models run
-    resource_utilization_before = calculate_resource_utilization()
 
     # Check if weights file exists, train summarized model if not
     filepath = 'learned_weights.pth'
@@ -185,120 +237,196 @@ def run_experiment(baseline_data, summarized_data, num_layers):
         transfer_weights = torch.load(filepath)
     else:
         print("Training the summarized model...")
-        summarized_model, transfer_weights, epoch_loss_array = train_rgc_layer(
+        summarized_model, transfer_weights, epoch_loss_array_summarized, epoch_accuracy_array_summarized = train_rgc_layer(
             train_data_summarized,
             transfer_weights=None,
             freeze_layers=False,
             num_layers=num_layers
         )
-        accuracy_dict['summarized_model'] = float(evaluate(summarized_model, test_data_summarized, weights_path='learned_weights.pth'))
         torch.save(transfer_weights, filepath)
 
-    # Resource utilization after summarized model runs
-    resource_utilization_after = calculate_resource_utilization()
-    resource_utilization_dict['summarized_model'] = {
-        'cpu_usage': resource_utilization_after['cpu_usage'] - resource_utilization_before['cpu_usage'],
-        'memory_usage': resource_utilization_after['memory_usage'] - resource_utilization_before['memory_usage']
-    }
-
-    # Train the transfer model
     print("Training the transfer model...")
-    transfer_model, weights_transfer_model, epoch_loss_array = (train_rgc_layer(
+    tracker_transfer = EmissionsTracker()
+    tracker_transfer.start()
+
+    transfer_model, weights_transfer_model, epoch_loss_array_transfer, epoch_accuracy_array_transfer = train_rgc_layer(
         train_data_summarized,
         transfer_weights=transfer_weights,
         freeze_layers=True, 
         num_layers=num_layers
-    ))
+    )
+
+    # Stop tracker and fetch data
+    run_id_transfer = tracker_transfer.run_id
+    tracker_transfer.stop()
+
+    emissions_dict['transfer_model'] = run_id_transfer
     accuracy_dict['transfer_model'] = float(evaluate(transfer_model, test_data_summarized, weights_path=None))
 
-    # Resource utilization after transfer model runs
-    resource_utilization_before = calculate_resource_utilization()
-    resource_utilization_dict['transfer_model'] = {
-        'cpu_usage': resource_utilization_before['cpu_usage'] - resource_utilization_after['cpu_usage'],
-        'memory_usage': resource_utilization_before['memory_usage'] - resource_utilization_after['memory_usage']
-    }
 
     # Train the baseline model
     print("Training the baseline model...")
-    baseline_model, weights_baseline_model, epoch_loss_array = train_rgc_layer(
+    tracker_baseline = EmissionsTracker()
+    tracker_baseline.start()
+
+    baseline_model, weights_baseline_model, epoch_loss_array_baseline, epoch_accuracy_array_baseline = train_rgc_layer(
         train_data_baseline,
         transfer_weights=None,
         freeze_layers=False, 
         num_layers=num_layers
     )
-    accuracy_dict['baseline_model']=float(evaluate(baseline_model, test_data_baseline, weights_path=None))
 
-    # Resource utilization after baseline model runs
-    resource_utilization_after = calculate_resource_utilization()
-    resource_utilization_dict['baseline_model'] = {
-        'cpu_usage': resource_utilization_after['cpu_usage'] - resource_utilization_before['cpu_usage'],
-        'memory_usage': resource_utilization_after['memory_usage'] - resource_utilization_before['memory_usage']
+    # Stop tracker and fetch data
+    run_id_baseline = tracker_baseline.run_id
+    tracker_baseline.stop()
+
+    emissions_dict['baseline_model'] = run_id_baseline
+    accuracy_dict['baseline_model'] = float(evaluate(baseline_model, test_data_baseline, weights_path=None))
+
+    epoch_loss_dict['transfer_model'] = epoch_loss_array_transfer
+    epoch_loss_dict['baseline_model'] = epoch_loss_array_baseline
+    epoch_accuracy_dict['transfer_model'] = epoch_accuracy_array_transfer
+    epoch_accuracy_dict['baseline_model'] = epoch_accuracy_array_baseline
+
+    return epoch_loss_dict, epoch_accuracy_dict, accuracy_dict, emissions_dict
+
+def get_resource_consumption_metrics(run_id_dict, csv_file):
+    # Load the CSV file
+    df = pd.read_csv(csv_file)
+
+    # Initialize an empty dictionary to store the results
+    resource_consumption_metrics = {}
+
+    # Iterate over each run_id in the dictionary
+    for model, run_id in run_id_dict.items():
+        # Ensure that run_id is a string
+        run_id_str = str(run_id) if isinstance(run_id, uuid.UUID) else run_id
+
+        # Find the row in the DataFrame that matches this run_id
+        run_data = df[df['run_id'] == run_id_str]
+
+        if not run_data.empty:
+            metrics = {
+                'emissions': run_data['emissions'].iloc[0],
+                'emissions_rate': run_data['emissions_rate'].iloc[0],
+                'cpu_energy': run_data['cpu_energy'].iloc[0],
+                'ram_energy': run_data['ram_energy'].iloc[0],
+                'energy_consumed': run_data['energy_consumed'].iloc[0]
+            }
+            resource_consumption_metrics[model] = metrics
+        else:
+            resource_consumption_metrics[model] = {
+                'emissions': None,
+                'emissions_rate': None,
+                'cpu_energy': None,
+                'ram_energy': None,
+                'energy_consumed': None
+            }
+
+    return resource_consumption_metrics
+
+def plot_emissions_data(data_dict):
+    categories = list(data_dict['transfer_model'].keys())
+    transfer_values = list(data_dict['transfer_model'].values())
+    baseline_values = list(data_dict['baseline_model'].values())
+
+    bar_width = 0.35
+    index = range(len(categories))
+
+    plt.figure(figsize=(12, 6))
+
+    plt.bar(index, transfer_values, bar_width, label='Transfer Model')
+    plt.bar([i + bar_width for i in index], baseline_values, bar_width, label='Baseline Model')
+
+    plt.xlabel('Metrics')
+    plt.ylabel('Values')
+    plt.title('Comparison of Transfer Model and Baseline Model Metrics')
+    plt.xticks([i + bar_width / 2 for i in index], categories, rotation=45)
+    plt.legend()
+
+    plt.tight_layout()
+    plt.show()
+
+def run_experiment_multiple_times(baseline_data, summarized_data, weight_file, num_experiments=10):
+    # Initialize empty lists to store results
+    all_epoch_loss = []
+    all_epoch_accuracy = []
+    all_accuracy = []
+    all_emissions = []
+
+    # Run the experiment multiple times
+    for _ in range(num_experiments):
+        if _ %2 == 0:
+            remove_file(weight_file)
+        print("Experiment no. ", _)
+        # Run the experiment once
+        epoch_loss_dict, epoch_accuracy_dict, accuracy_dict, emissions_dict = run_experiment(baseline_data, summarized_data, 2)
+        csv_file_path = 'emissions.csv'
+        emissions_dict = get_resource_consumption_metrics(emissions_dict, csv_file_path)
+        # Append results to the lists
+        all_epoch_loss.append(epoch_loss_dict)
+        all_epoch_accuracy.append(epoch_accuracy_dict)
+        all_accuracy.append(accuracy_dict)
+        all_emissions.append(emissions_dict)
+
+    # Calculate average values
+    avg_epoch_loss_dict = {
+        'transfer_model': np.mean([exp['transfer_model'] for exp in all_epoch_loss], axis=0).tolist(),
+        'baseline_model': np.mean([exp['baseline_model'] for exp in all_epoch_loss], axis=0).tolist()
     }
 
-    # Populate epoch loss dictionary
-    epoch_loss_dict['summarized_model'] = epoch_loss_array
-    epoch_loss_dict['transfer_model'] = epoch_loss_array
-    epoch_loss_dict['baseline_model'] = epoch_loss_array
+    avg_epoch_accuracy_dict = {
+        'transfer_model': np.mean([exp['transfer_model'] for exp in all_epoch_accuracy], axis=0).tolist(),
+        'baseline_model': np.mean([exp['baseline_model'] for exp in all_epoch_accuracy], axis=0).tolist()
+    }
 
-    return epoch_loss_dict, accuracy_dict, resource_utilization_dict
+    avg_accuracy_dict = {
+        'transfer_model': np.mean([exp['transfer_model'] for exp in all_accuracy]),
+        'baseline_model': np.mean([exp['baseline_model'] for exp in all_accuracy])
+    }
 
+    avg_emissions_dict = {
+        'transfer_model': {
+            key: np.mean([exp['transfer_model'][key] for exp in all_emissions]) for key in emissions_dict['transfer_model']
+        },
+        'baseline_model': {
+            key: np.mean([exp['baseline_model'][key] for exp in all_emissions]) for key in emissions_dict['baseline_model']
+        }
+    }
 
+    return avg_epoch_loss_dict, avg_epoch_accuracy_dict, avg_accuracy_dict, avg_emissions_dict
 
+def remove_file(file_name):
+    # Construct the full path to the file
+    file_path = os.path.join(os.getcwd(), file_name)
+    # Check if the file exists before trying to remove it
+    if os.path.exists(file_path):
+        # Remove the file
+        os.remove(file_path)
+        print(f"{file_name} removed successfully.")
+    else:
+        print(f"{file_name} does not exist.")
 
 baseline_data, summarized_data = get_data()
 
 print_graph_details(baseline_data, summarized_data)
+        
+weight_file = "learned_weights.pth"
+
+'''RUN EXPERIMENT MULTIPLE TIMES'''
+avg_epoch_loss, avg_epoch_accuracy, avg_accuracy, avg_emissions = run_experiment_multiple_times(baseline_data, summarized_data, weight_file, num_experiments=10)
+plot_analysis(avg_epoch_loss, avg_epoch_accuracy, avg_accuracy)
+plot_emissions_data(avg_emissions)
+
+'''RUN EXPERIMENT ONCE'''
+# epoch_loss_dict, epoch_accuracy_dict, accuracy_dict, emissions_dict = run_experiment(baseline_data, summarized_data, 2)
+# plot_analysis(epoch_loss_dict, epoch_accuracy_dict, accuracy_dict)
+# csv_file_path = 'emissions.csv'
+# emissions_dict = get_resource_consumption_metrics(emissions_dict, csv_file_path)
+# plot_emissions_data(emissions_dict)
 
 
-x = run_experiment(baseline_data, summarized_data, 2)
-for i in x:
-    print(i)
 
 
 
 
-# # Function to train the first model or load weights if they already exist
-# def train_or_load_first_model():
-#     filepath = 'learned_weights.pth'
-#     if os.path.exists(filepath):
-#         print("Loading weights from:", filepath)
-#         return torch.load(filepath)
-#     else:
-#         print("Training the first model...")
-#         first_model, learned_weights = train_rgc_layer(
-#             train_data_summarized,
-#             transfer_weights=None,
-#             freeze_layers=False
-#         )
-#         evaluate(first_model, test_data_summarized, weights_path='learned_weights.pth')
-#         evaluate(first_model, test_data_summarized, weights_path=None)
-#         torch.save(learned_weights, filepath)
-#         return learned_weights
-
-# # Train the first model or load weights
-# transfer_weights = train_or_load_first_model()
-
-# # Train the second model with transfer learning and layer freezing
-# print("TRAINING THE WEIGHT TRANSFER MODEL...")
-# second_model_rgcn_layer, weights_second_model = train_rgc_layer(
-#     train_data_summarized,
-#     transfer_weights=transfer_weights,  # Use transferred weights
-#     freeze_layers=True  # Freeze layer
-# )
-
-
-# print("EVALUATING THE SUMMARIZED GRAPH ON SECOND MODEL")
-# # apply_and_evaluate(second_model_rgcn_layer, test_data_summarized.x, test_data_summarized.edge_index, test_data_summarized.edge_attr, test_data_summarized.y, num_classes=3)
-# evaluate(second_model_rgcn_layer, test_data_summarized, weights_path='learned_weights.pth')
-# evaluate(second_model_rgcn_layer, test_data_summarized, weights_path=None)
-# # third model: Baseline Model 
-# print("TRAINING THE BASELINE MODEL ...")
-# baseline_model_rgcn_layer, weights_baseline_model = train_rgc_layer(
-#     train_data_baseline,
-#     transfer_weights=None, 
-#     freeze_layers=False  
-# )
-
-# print("EVALUATING THE BASELINE GRAPH DATA ON BASELINE MODEL")
-# # apply_and_evaluate(baseline_model_rgcn_layer, test_data_baseline.x, test_data_baseline.edge_index, test_data_baseline.edge_attr, test_data_baseline.y, num_classes=3)
-# evaluate(baseline_model_rgcn_layer, test_data_baseline, weights_path=None)
