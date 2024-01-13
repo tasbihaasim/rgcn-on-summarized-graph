@@ -25,10 +25,16 @@ pip install -r requirements.txt
 
 ## Running the Python Code
 
-After activating the environment, run the following command:
+After activating the environment, run the following command to run the experiment for n number of times:
 
 ```bash
 python run.py
+```
+
+If you want to run the experiment only once, then use the following command:
+
+```bash
+python run.py run_once
 ```
 
 This Readme provides instructions for executing the k-Bisimulation process on a Windows system and setting up the required Python environment to analyze the energy consumption during the training of Relational Graph Convolutional Networks (RGCN) on summarized graphs. Follow the steps carefully to replicate and assess the energy consumption analysis.
