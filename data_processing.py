@@ -14,7 +14,7 @@ import re
 node_features_file = "aifb_stripped.ntnode_ID" 
 edge_indices_file = "aifb_stripped.ntedge_ID"
 original_file = "aifb_stripped.nt"
-output_file = "here.txt"
+output_file = "output.txt"
 node_classes_file = 'data/aifb/raw/completeDataset.tsv'
 
 def read_node_classes(file_path):

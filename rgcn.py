@@ -407,23 +407,9 @@ def remove_file(file_name):
     else:
         print(f"{file_name} does not exist.")
 
-baseline_data, summarized_data = get_data()
 
-print_graph_details(baseline_data, summarized_data)
-        
-weight_file = "learned_weights.pth"
 
-'''RUN EXPERIMENT MULTIPLE TIMES'''
-avg_epoch_loss, avg_epoch_accuracy, avg_accuracy, avg_emissions = run_experiment_multiple_times(baseline_data, summarized_data, weight_file, num_experiments=10)
-plot_analysis(avg_epoch_loss, avg_epoch_accuracy, avg_accuracy)
-plot_emissions_data(avg_emissions)
 
-'''RUN EXPERIMENT ONCE'''
-# epoch_loss_dict, epoch_accuracy_dict, accuracy_dict, emissions_dict = run_experiment(baseline_data, summarized_data, 2)
-# plot_analysis(epoch_loss_dict, epoch_accuracy_dict, accuracy_dict)
-# csv_file_path = 'emissions.csv'
-# emissions_dict = get_resource_consumption_metrics(emissions_dict, csv_file_path)
-# plot_emissions_data(emissions_dict)
 
 
 

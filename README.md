@@ -1,39 +1,40 @@
-# Condensed Summaries
+# Energy Consumption Analysis of RGCN Training on Summarized Graphs
 
+## For Windows Users
 
-## Getting Started
-To use, your python version must be at least 3.11.
+### Running the k-Bisimulation Execution File
 
-To get started, install the  package and its dependencies in editable mode by running:
+To generate the summarized representation of the graph:
 
-```sh
-pip install -e .
+```bash
+./full_bisimulation.exe run_timed mappingbased-objects_lang=en.ttl
+
+./full_bisimulation.exe run_k_bisimulation_store_partition mappingbased-objects_lang=en.ttl --output=here.txt 
+
+./full_bisimulation.exe run_k_bisimulation_store_partition dummy_file.nt --k=3 --output=output.txt --support=5
+```
+Replace "dummy_file" with your actual file name, and adjust the values of 'k' and 'support' parameters if needed.
+
+## Setting Up the Python Environment
+
+Install the required packages using the provided `requirements.txt` file.
+
+```bash
+pip install -r requirements.txt
 ```
 
-To run the tests, run:
+## Running the Python Code
 
-```sh
-pip install -e '.[test]'  # on Linux / MacOS
-pip install -e ".[test]"  # on Windows
-pytest ./tests
+After activating the environment, run the following command:
+
+```bash
+python run.py
 ```
 
+This Readme provides instructions for executing the k-Bisimulation process on a Windows system and setting up the required Python environment to analyze the energy consumption during the training of Relational Graph Convolutional Networks (RGCN) on summarized graphs. Follow the steps carefully to replicate and assess the energy consumption analysis.
 
-## compiling the C++ version
 
-1. Download the latest boost libraries
-2. Compile the libraries (needed for the commmand line argument parsing, see https://www.boost.org/doc/libs/1_83_0/more/getting_started/ )
-3. Compile the bisumulation code:
 
-    /usr/bin/g++ -std=c++20 -Wall -Wpedantic -Ofast -fdiagnostics-color=always -I ~/boost/boost_1_83_0_install/include/   full_bisimulation.cpp -o full_bisimulation  ~/boost/boost_1_83_0_install/lib/libboost_program_options.a 
-
-4. Running on the command line:
-
-./full_bisimulation run_timed mappingbased-objects_lang\=en.ttl
-
-./full_bisimulation run_k_bisimulation_store_partition mappingbased-objects_lang\=en.ttl  --output=here.txt 
-
-./full_bisimulation run_k_bisimulation_store_partition mappingbased-objects_lang\=en.ttl --k=3 --output=here.txt --skip_singletons --support=5
 
 
 
